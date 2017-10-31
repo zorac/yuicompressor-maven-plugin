@@ -1,12 +1,19 @@
 package net_alchim31_maven_yuicompressor;
 
+import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.codehaus.plexus.util.DirectoryScanner;
 import org.codehaus.plexus.util.IOUtil;
@@ -22,6 +29,7 @@ public class Aggregation {
     public boolean insertFileHeader = false;
     public boolean fixLastSemicolon = false;
     public boolean autoExcludeWildcards = false;
+    public boolean moduleOrdering = false;
 
     public List<File> run(Collection<File> previouslyIncludedFiles, BuildContext buildContext) throws Exception {
         defineInputDir();
@@ -34,6 +42,7 @@ public class Aggregation {
         }
 
         if (files.size() != 0) {
+            if (moduleOrdering) files = orderModules(files);
             output = output.getCanonicalFile();
             output.getParentFile().mkdirs();
             OutputStream out = buildContext.newFileOutputStream( output );
@@ -140,5 +149,87 @@ public class Aggregation {
         }
         scanner.addDefaultExcludes();
         return scanner;
+    }
+
+    private List<File> orderModules(List<File> files) throws Exception {
+        int count = files.size();
+        List<Module> modules = new ArrayList<Module>(count);
+        List<File> result = new ArrayList<File>(count);
+
+        for (File file : files) {
+            Module module = new Module(file);
+
+            module.parse();
+            modules.add(module);
+        }
+
+        for (int i = 0; i < count; i++) {
+            Module module;
+            boolean redo;
+
+            do {
+                module = modules.get(i);
+                redo = false;
+
+                for (int j = i + 1; j < count; j++) {
+                    Module other = modules.get(j);
+
+                    if (module.requires.contains(other.module)) {
+                        modules.set(i, other);
+                        modules.set(j, module);
+                        redo = true;
+                        break;
+                    }
+                }
+            } while (redo);
+
+            result.add(module.file);
+        }
+
+        return result;
+    }
+
+    private static class Module {
+        private File file;
+        private String module;
+        private Set<String> requires = new HashSet<String>();
+        private boolean parsed = false;
+
+        private Module(File file) throws Exception {
+            this.file = file;
+        }
+
+        private void parse() throws Exception {
+            FileInputStream in = new FileInputStream(file);
+            InputStreamReader isr = new InputStreamReader(in);
+            BufferedReader br = new BufferedReader(isr);
+            String text = br.readLine();
+
+            br.close();
+            isr.close();
+            in.close();
+
+            parsed = parseAmd(text);
+        }
+
+        private static final Pattern amdPattern = Pattern.compile(
+            "define\\(\"(.*?)\",(?:\\[(.*?)\\],)?.*");
+
+        private boolean parseAmd(String text) throws Exception {
+            Matcher matcher = amdPattern.matcher(text);
+
+            if (!matcher.matches()) return false;
+            module = matcher.group(1);
+
+            String reqs = matcher.group(2);
+
+            if (reqs == null) return true;
+
+            for (String require : reqs.split(",")) {
+                requires.add(require.substring(1, require.length() - 1));
+            }
+
+            return true;
+        }
     }
 }
